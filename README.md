@@ -5,10 +5,17 @@ An Augmented Reality plugin for Even Realities G2 smart glasses that uses the ph
 ## Features
 
 - **Camera Access**: Uses the phone's rear camera to capture the user's environment
-- **Scene Analysis**: Analyzes captured images to detect objects and scenes (currently uses mock data, ready for AI integration)
-- **Glasses Display**: Shows analysis results on the 576x288 pixel micro-LED display of G2 glasses
+- **AI Scene Analysis**: Analyzes captured images using LM Studio or OpenAI-compatible APIs to detect objects and scenes
+- **Real-time Streaming**: Continuous frame capture and analysis every 2 seconds
+- **Voice Chat**: Talk to the AI using glasses built-in transcription or text input
+- **Glasses Display**: Shows analysis results and AI responses on the 576x288 pixel micro-LED display of G2 glasses
 - **Event Handling**: Responds to touchpad interactions (click, double-click, scroll)
-- **Web Preview**: Companion web UI for phone with camera feed and analysis results
+- **Web Preview**: Companion web UI for phone with camera feed, analysis results, and chat interface
+- **Flexible AI Configuration**: Support for LM Studio (local) or OpenAI-compatible APIs with API keys
+
+## Use Case
+
+The app is designed for a hands-free AR experience: **keep your smartphone in your shirt pocket** with the camera facing outward. This allows the phone to capture everything you see while the glasses display AI-generated contextual information about your environment.
 
 ## Architecture
 
@@ -89,9 +96,13 @@ Main application class that handles:
 - UI updates
 - Glasses display communication
 
-### Image Analysis with LM Studio
+### Image Analysis with AI
 
-The app is configured to use **LM Studio** for AI analysis. The plugin runs on your phone while LM Studio runs on a remote computer (your PC).
+The app uses AI for image analysis and chat. You can configure it to use:
+- **LM Studio** (local AI running on your computer)
+- **OpenAI-compatible APIs** (with API key)
+
+The plugin runs on your phone while the AI service runs on a remote computer or cloud.
 
 ### Setting up LM Studio on Remote Computer
 
@@ -111,6 +122,7 @@ Tailscale creates a secure private network between your devices, making remote a
 3. **Enable LM Studio API server**:
    - Open LM Studio, go to "Server" tab
    - Enable "Server Mode"
+   - **Important**: Set "Bind to" to `0.0.0.0` (not `127.0.0.1`) to allow Tailscale connections
    - Note the port (default: 1234)
    - Copy the model name
 
@@ -145,10 +157,8 @@ Tailscale creates a secure private network between your devices, making remote a
 4. **Enable the API server for remote access**:
    - In LM Studio, go to the "Server" tab
    - Enable "Server Mode"
+   - **Important**: Set "Bind to" to `0.0.0.0` to allow remote connections
    - Note the port (default: 1234)
-   - **Important**: LM Studio typically binds to localhost by default. You may need to:
-     - Check LM Studio settings for "Allow network connections" or similar option
-     - Or use a proxy/SSH tunnel if direct access is blocked
    - Copy the model name (shown in the model info)
 
 5. **Configure the app on your phone**:
@@ -157,6 +167,8 @@ Tailscale creates a secure private network between your devices, making remote a
      - **LM Studio IP**: Enter your computer's IP address (e.g., `192.168.1.100`)
      - **Port**: Enter the LM Studio port (default: `1234`)
      - **Model**: Enter the exact model name from LM Studio
+     - **Use API Key**: Check if using OpenAI-compatible API
+     - **API Key**: Enter your API key if required
    - Click "Save Configuration"
 
 6. **Ensure both devices are on the same network**:
@@ -182,20 +194,30 @@ Tailscale creates a secure private network between your devices, making remote a
 - Consider using SSH tunneling: `ssh -L 1234:localhost:1234 user@remote-pc`
 - Or use a reverse proxy like ngrok for testing
 
+### Voice Chat
+
+The app supports voice interaction with the AI:
+- **Glasses Transcription**: Uses the G2 glasses' built-in transcription capability
+- **Text Input**: Type messages directly in the web UI
+- **Chat History**: Maintains conversation context
+- **Glasses Display**: AI responses are shown on the glasses display
+
+To use voice chat:
+1. Ensure glasses are connected via Even Hub SDK
+2. Click "Start Voice" to activate glasses audio capture
+3. Speak naturally - glasses will transcribe your speech
+4. Transcribed text is sent to the AI for processing
+5. AI response appears in chat and on glasses
+
 ### How it works
 
-The app sends images to LM Studio using the OpenAI-compatible chat completions API with vision support:
-- Captures frame from phone camera
-- Converts to base64 JPEG
-- Sends to remote LM Studio via HTTP
-- Parses JSON response with scene, objects, and confidence
-- Displays results on glasses
+The app sends images and text to AI using the OpenAI-compatible API:
+- **Image Analysis**: Captures frame from phone camera, converts to base64 JPEG, sends to AI via HTTP
+- **Chat**: Sends text/voice input to AI, maintains conversation history
+- **Authentication**: Optional Bearer token support for API key authentication
+- **Response**: Parses JSON response and displays results on glasses
 
 Configuration is saved to localStorage on your phone, so you only need to set it up once.
-
-### Alternative AI Services
-
-To use a different AI service, modify the `performImageAnalysis` method in `src/main.ts`:
 
 ### Glasses Display
 Analysis results are formatted for the 576x288 pixel display:
@@ -237,9 +259,11 @@ Extend the `handleUserAction` method to implement custom interactions.
 ## Limitations
 
 - Camera access only works on phone (not on desktop browsers)
-- Mock analysis returns static data - integrate AI service for production
 - Glasses display is 4-bit greyscale (green) with limited resolution
 - Max 4 image containers + 8 other containers per page
+- AI analysis requires network connection to LM Studio or compatible API
+- Voice transcription requires glasses connection (not available in web-only mode)
+- Streaming mode may drain battery faster
 
 ## Troubleshooting
 

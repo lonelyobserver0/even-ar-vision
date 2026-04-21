@@ -227,6 +227,15 @@ h3 {
   outline-offset: 2px;
 }
 
+.config-item input[type="checkbox"] {
+  width: auto;
+  margin-right: 8px;
+}
+
+.config-item input[type="password"] {
+  font-family: var(--mono);
+}
+
 .chat-section {
   margin-top: 24px;
   padding: 20px;

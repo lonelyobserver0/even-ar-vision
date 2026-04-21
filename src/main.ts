@@ -12,6 +12,8 @@ interface LMStudioConfig {
   model: string
   maxTokens: number
   temperature: number
+  apiKey?: string
+  useApiKey: boolean
 }
 
 class ARVisionApp {
@@ -27,7 +29,8 @@ class ARVisionApp {
     baseUrl: 'http://100.x.x.x:1234/v1', // IP Tailscale del computer dove gira LM Studio
     model: 'local-model', // Sostituisci con il nome del tuo modello in LM Studio
     maxTokens: 500,
-    temperature: 0.7
+    temperature: 0.7,
+    useApiKey: false
   }
 
   constructor() {
@@ -67,6 +70,14 @@ class ARVisionApp {
           <div class="config-item">
             <label for="lmStudioModel">Model:</label>
             <input type="text" id="lmStudioModel" value="local-model" placeholder="model-name">
+          </div>
+          <div class="config-item">
+            <label for="useApiKey">Use API Key:</label>
+            <input type="checkbox" id="useApiKey">
+          </div>
+          <div class="config-item">
+            <label for="apiKey">API Key (OpenAI-compatible):</label>
+            <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
           </div>
           <button id="saveConfig" class="btn btn-secondary">Save Configuration</button>
         </div>
@@ -301,11 +312,17 @@ class ARVisionApp {
   private async performImageAnalysis(imageData: string): Promise<ARAnalysis> {
     try {
       // Call LM Studio API (OpenAI-compatible)
+      const headers: { [key: string]: string } = {
+        'Content-Type': 'application/json',
+      }
+
+      if (this.lmStudioConfig.useApiKey && this.lmStudioConfig.apiKey) {
+        headers['Authorization'] = `Bearer ${this.lmStudioConfig.apiKey}`
+      }
+
       const response = await fetch(`${this.lmStudioConfig.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
         body: JSON.stringify({
           model: this.lmStudioConfig.model,
           messages: [
@@ -449,12 +466,16 @@ class ARVisionApp {
     const ip = document.querySelector<HTMLInputElement>('#lmStudioIp')!.value
     const port = document.querySelector<HTMLInputElement>('#lmStudioPort')!.value
     const model = document.querySelector<HTMLInputElement>('#lmStudioModel')!.value
+    const useApiKey = document.querySelector<HTMLInputElement>('#useApiKey')!.checked
+    const apiKey = document.querySelector<HTMLInputElement>('#apiKey')!.value
 
     this.lmStudioConfig = {
       baseUrl: `http://${ip}:${port}/v1`,
       model: model,
       maxTokens: 500,
-      temperature: 0.7
+      temperature: 0.7,
+      useApiKey: useApiKey,
+      apiKey: useApiKey ? apiKey : undefined
     }
 
     localStorage.setItem('lmStudioConfig', JSON.stringify(this.lmStudioConfig))
@@ -473,6 +494,8 @@ class ARVisionApp {
         document.querySelector<HTMLInputElement>('#lmStudioIp')!.value = url.hostname
         document.querySelector<HTMLInputElement>('#lmStudioPort')!.value = url.port || '1234'
         document.querySelector<HTMLInputElement>('#lmStudioModel')!.value = config.model
+        document.querySelector<HTMLInputElement>('#useApiKey')!.checked = config.useApiKey || false
+        document.querySelector<HTMLInputElement>('#apiKey')!.value = config.apiKey || ''
 
         this.updateStatus('Configuration loaded from storage.')
       } catch (error) {
@@ -564,9 +587,17 @@ class ARVisionApp {
     this.updateVoiceStatus('Sending to AI...')
 
     try {
+      const headers: { [key: string]: string } = {
+        'Content-Type': 'application/json',
+      }
+
+      if (this.lmStudioConfig.useApiKey && this.lmStudioConfig.apiKey) {
+        headers['Authorization'] = `Bearer ${this.lmStudioConfig.apiKey}`
+      }
+
       const response = await fetch(`${this.lmStudioConfig.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: headers,
         body: JSON.stringify({
           model: this.lmStudioConfig.model,
           messages: [

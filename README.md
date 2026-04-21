@@ -232,6 +232,23 @@ The app requires the following permissions (configured in `app.json`):
 - `camera`: Access phone camera for environment capture
 - `network`: Send images to AI services for analysis
 
+### Enabling Permissions in Even Realities App
+
+If the camera permission is denied or the popup doesn't appear:
+
+1. **Open Even Realities App** on your phone
+2. **Go to Settings** (gear icon)
+3. **Find Permissions** section
+4. **Enable Camera** permission for this plugin
+5. **Restart the app** and try again
+
+**Alternative**: Click the "Request Permission" button in the app UI to trigger the permission request manually.
+
+If permissions still don't work, ensure:
+- The plugin is properly installed via Even Hub
+- You're using the latest version of Even Realities App
+- The app has been granted necessary permissions in system settings
+
 ## Building for Distribution
 
 1. **Build the web app**:

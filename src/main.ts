@@ -52,7 +52,8 @@ class ARVisionApp {
         <div class="controls">
           <button id="startCamera" class="btn btn-primary">Start Camera</button>
           <button id="stopCamera" class="btn btn-secondary" disabled>Stop Camera</button>
-          <button id="startStreaming" class="btn btn-accent" disabled>Start Streaming</button>
+          <button id="requestPermission" class="btn btn-accent">Request Permission</button>
+          <button id="startStreaming" class="btn btn-primary" disabled>Start Streaming</button>
           <button id="stopStreaming" class="btn btn-secondary" disabled>Stop Streaming</button>
           <button id="analyze" class="btn btn-accent" disabled>Analyze Single Frame</button>
         </div>
@@ -125,6 +126,7 @@ class ARVisionApp {
 
     document.querySelector<HTMLButtonElement>('#startCamera')!.addEventListener('click', () => this.startCamera())
     document.querySelector<HTMLButtonElement>('#stopCamera')!.addEventListener('click', () => this.stopCamera())
+    document.querySelector<HTMLButtonElement>('#requestPermission')!.addEventListener('click', () => this.requestCameraPermission())
     document.querySelector<HTMLButtonElement>('#startStreaming')!.addEventListener('click', () => this.startStreaming())
     document.querySelector<HTMLButtonElement>('#stopStreaming')!.addEventListener('click', () => this.stopStreaming())
     document.querySelector<HTMLButtonElement>('#analyze')!.addEventListener('click', () => this.analyzeScene())
@@ -188,26 +190,75 @@ class ARVisionApp {
     // Implement action handling based on user interaction
   }
 
-  private async startCamera() {
+  private async requestCameraPermission() {
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      this.updateStatus('Requesting camera permission...')
+
+      // Try to request permission explicitly
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' },
         audio: false
       })
-      
+
+      // If successful, immediately stop the stream (we just wanted the permission)
+      stream.getTracks().forEach(track => track.stop())
+
+      this.updateStatus('Permission granted! You can now start the camera.')
+    } catch (error: any) {
+      console.error('Permission request failed:', error)
+
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        this.updateStatus('⚠️ Permission denied. Open Even Realities App → Settings → Permissions → Enable Camera')
+      } else if (error.name === 'NotFoundError') {
+        this.updateStatus('Error: No camera found on this device.')
+      } else {
+        this.updateStatus('Error: ' + (error.message || 'Could not request permission. Check app settings.'))
+      }
+    }
+  }
+
+  private async startCamera() {
+    try {
+      // Check if mediaDevices is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Camera API not available in this environment')
+      }
+
+      // Request camera permission with explicit constraints
+      this.updateStatus('Requesting camera permission...')
+
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      })
+
       if (this.videoElement) {
         this.videoElement.srcObject = this.stream
+        await this.videoElement.play()
       }
-      
+
       document.querySelector<HTMLButtonElement>('#startCamera')!.disabled = true
       document.querySelector<HTMLButtonElement>('#stopCamera')!.disabled = false
       document.querySelector<HTMLButtonElement>('#startStreaming')!.disabled = false
       document.querySelector<HTMLButtonElement>('#analyze')!.disabled = false
-      
+
       this.updateStatus('Camera started. Ready to analyze.')
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error accessing camera:', error)
-      this.updateStatus('Error: Could not access camera. Check permissions.')
+
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        this.updateStatus('⚠️ Permission denied. Open Even Realities App → Settings → Permissions → Enable Camera')
+      } else if (error.name === 'NotFoundError') {
+        this.updateStatus('Error: No camera found on this device.')
+      } else if (error.name === 'NotReadableError') {
+        this.updateStatus('Error: Camera is already in use by another application.')
+      } else {
+        this.updateStatus(`Error: ${error.message || 'Could not access camera. Try clicking "Request Permission" button.'}`)
+      }
     }
   }
 

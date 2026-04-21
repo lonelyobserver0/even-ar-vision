@@ -325,19 +325,92 @@ h3 {
 }
 
 @media (max-width: 768px) {
+  body {
+    padding: 8px;
+  }
+
+  #app {
+    max-width: 100%;
+  }
+
   .ar-container {
-    padding: 20px;
+    padding: 16px;
+    border-radius: 8px;
   }
 
   h1 {
-    font-size: 24px;
+    font-size: 20px;
+  }
+
+  h1 + p {
+    font-size: 14px;
+  }
+
+  h3 {
+    font-size: 16px;
+    margin: 16px 0 12px 0;
+  }
+
+  .camera-section {
+    margin: 16px 0;
+    border-radius: 6px;
   }
 
   .controls {
     flex-direction: column;
+    margin: 16px 0;
+    gap: 8px;
   }
 
   .btn {
     width: 100%;
+    padding: 14px 20px;
+    font-size: 16px;
+  }
+
+  .config-section,
+  .chat-section,
+  .analysis-result,
+  .glasses-preview {
+    padding: 16px;
+    border-radius: 6px;
+  }
+
+  .config-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .config-item label {
+    flex: none;
+    font-size: 14px;
+  }
+
+  .config-item input {
+    padding: 12px;
+    font-size: 16px;
+  }
+
+  .chat-controls {
+    flex-direction: column;
+  }
+
+  .chat-history {
+    max-height: 200px;
+  }
+
+  .chat-input {
+    flex-direction: column;
+  }
+
+  .chat-input input {
+    padding: 14px;
+    font-size: 16px;
+  }
+
+  .glasses-display {
+    font-size: 10px;
+    padding: 12px;
   }
 }

@@ -2,9 +2,10 @@
 
 Hands-free augmented reality for **Even Realities G2** smart glasses. Keep your phone
 in your shirt pocket with the camera facing outward: the app watches what you see,
-detects objects, reasons about the scene with a vision LLM, and prints contextual
-information onto the glasses' micro-LED display. You can also talk to it — speak into
-the glasses' microphone and the assistant answers on the display.
+detects objects, draws **labelled boxes around them on the glasses**, and reasons about
+the scene with a vision LLM that acts as a **companion** — it knows it sees what you see
+and remarks on it in your language. You can also talk to it: speak into the glasses'
+microphone and the assistant answers on the display.
 
 Everything can run **fully local and private**: the LLM (LM Studio) and the speech
 recognizer (Whisper) live on your own machine, reachable from the phone over your LAN
@@ -68,12 +69,20 @@ See **CAPACITOR.md** for the native/relay details.
 
 - **Live scene understanding** — continuous frame capture with two levels: fast on-device
   object detection (MediaPipe) and slower vision-LLM reasoning for richer descriptions.
-- **Bounding boxes** — detected objects are outlined with a labelled box on the live
-  preview.
+- **Boxes & labels on the glasses** — each detected object gets a positioned, bordered
+  label drawn at its location on the 576×288 display, built from cheap **text** containers
+  (an earlier image-tile HUD was too slow over BLE). A bottom caption strip always shows
+  the companion's latest remark. The same boxes are mirrored on the phone preview.
+- **Vision companion** — the LLM is prompted as a companion that sees the user's view: the
+  current frame and a textual summary (detected objects + any OCR'd text) are sent with
+  each turn, so it can answer "what is this?" and proactively comment, briefly, in the
+  user's language. Applies to both chat and the automatic scene analysis.
+- **Stable, low-traffic HUD** — detector flicker is debounced (temporal grace + spatial
+  hysteresis) and a scene-change gate means a still object never re-sends. Two runtime
+  sliders (refresh floor, jitter threshold) and a live debug readout let you tune it.
 - **Voice chat (privacy-first)** — open the glasses' mic, speak, the PCM streams to the
   brain over the relay, gets transcribed by a **local Whisper** server, sent to the LLM,
   and the answer is printed on the glasses.
-- **Glasses display** — results formatted for the 576×288 4-bit display (rendered green).
 - **Touchpad events** — click / double-click / scroll are forwarded from the glasses.
 - **Local or remote AI** — LM Studio or any OpenAI-compatible endpoint; works over LAN or
   Tailscale.
@@ -194,9 +203,12 @@ one-time setup). Use the values the Qt manager prints, or:
 
 Then:
 
-1. **Start camera** — live preview with object boxes; the brain begins analyzing frames.
-2. **Analyze single frame** — one-shot vision-LLM description.
-3. **Start voice** — opens the glasses mic; speak, then stop to transcribe → LLM → glasses.
+1. **Start Camera** — live preview with object boxes; the brain begins analyzing frames.
+2. **Object labels on glasses** (checkbox) — draw the boxes + labels on the glasses. Tune
+   the two sliders if needed: *HUD refresh floor* (min ms between redraws) and *Jitter grid*
+   (how far a box must move before it redraws). The debug line shows what's detected vs. drawn.
+3. **Analyze Now** — one-shot companion remark about the current view.
+4. **Start Voice** — opens the glasses mic; speak, then stop to transcribe → LLM → glasses.
 
 ### Over Tailscale
 

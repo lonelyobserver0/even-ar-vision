@@ -1,0 +1,21 @@
+{
+  "package_id": "com.even.arvision",
+  "edition": "202601",
+  "name": "AR Vision",
+  "version": "6.2.0",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Connect to the AR Vision relay to receive what to display and send back glasses input.",
+      "whitelist": ["*"]
+    },
+    {
+      "name": "g2-microphone",
+      "desc": "Capture glasses microphone audio for hands-free voice chat with the assistant."
+    }
+  ],
+  "supported_languages": ["en"]
+}

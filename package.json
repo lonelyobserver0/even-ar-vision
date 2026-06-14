@@ -1,0 +1,29 @@
+{
+  "name": "even-ar-vision",
+  "private": true,
+  "version": "6.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "relay": "node relay/server.mjs",
+    "pack:ehpk": "vite build --config vite.plugin.config.ts && mv dist-plugin/glasses.html dist-plugin/index.html && evenhub pack app.json dist-plugin -o ar-vision.ehpk",
+    "cap:sync": "npm run build && cap sync android",
+    "cap:open": "cap open android",
+    "cap:run": "npm run build && cap run android"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/cli": "^8.4.0",
+    "@evenrealities/evenhub-cli": "^0.1.13",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.9"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.4.0",
+    "@evenrealities/even_hub_sdk": "^0.0.10",
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "tesseract.js": "^7.0.0"
+  }
+}

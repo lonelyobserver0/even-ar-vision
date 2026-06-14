@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AR Vision — Servers
+GenericName=LM Studio & Whisper manager
+Comment=Start/stop and watch the LM Studio and local Whisper servers for AR Vision
+Exec=/usr/bin/uv run --script /home/loneobs/Code/Even/HUB/even-ar-vision/tools/server_manager.py
+Icon=network-server
+Terminal=false
+Categories=Development;
+StartupNotify=true
+Keywords=AR;Even;LM Studio;Whisper;ASR;server;

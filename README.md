@@ -18,20 +18,20 @@ The project is **not** a single web page. It is split in two halves that talk ov
 small pub/sub relay:
 
 ```
-┌─ phone ─────────────────────────────────────────────┐
+┌─ phone ──────────────────────────────────────────────┐
 │                                                      │
 │  AR Vision  (Capacitor Android app = the "brain")    │
 │    WebView : camera, object detection, LLM, voice,   │
-│              the whole UI            (src/main.ts)    │
+│              the whole UI            (src/main.ts)   │
 │    Native  : RelayHttpd  ── http://localhost:8787 ───┼──┐
-│              (NanoHTTPD, SSE pub/sub)                 │  │
-└──────────────────────────────────────────────────────┘  │
-                                                           │  topics: render / input / audio
-┌─ Even Realities app (same phone) ───────────────────────┐│
-│  WebView : AR Vision "terminal" (.ehpk)  ◄──────────────┘│
-│            dumb renderer, no logic    (src/terminal.ts)  │
+│              (NanoHTTPD, SSE pub/sub)                │  │
+└──────────────────────────────────────────────────────┘  │ topics: render / input / audio
+                                                          │
+┌─ Even Realities app (same phone) ───────────────────────│─┐ 
+│  WebView : AR Vision "terminal" (.ehpk)  ◄──────────────┘ │
+│            dumb renderer, no logic    (src/terminal.ts)   │
 │            └── Even Hub SDK bridge ── BLE ──► G2 glasses  │
-└──────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────┘
 ```
 
 - **Brain** (`src/main.ts`) — the Capacitor Android app. Holds *all* the logic: camera

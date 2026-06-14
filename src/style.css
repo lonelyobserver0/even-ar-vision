@@ -163,6 +163,50 @@ h3 {
   flex-wrap: wrap;
 }
 
+.hud-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.version {
+  font-size: 0.5em;
+  opacity: 0.6;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+.hud-tuning {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 24px;
+}
+
+.hud-tuning .slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.hud-tuning input[type="range"] {
+  width: 100%;
+}
+
+.hud-debug {
+  font-family: monospace;
+  font-size: 12px;
+  opacity: 0.75;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  word-break: break-word;
+}
+
 .btn {
   padding: 12px 24px;
   border: none;

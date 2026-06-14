@@ -42,9 +42,12 @@ class GlassesTerminal {
   // arrives immediately on subscribe — often before waitForEvenAppBridge resolves). Without
   // this we'd drop it and the glasses would stay blank until the brain happens to republish.
   private pendingRender: RenderCommand | null = null
-  // Render commands must be applied strictly in order: e.g. a 'mic' (audioControl) requires the
-  // page to exist first, and the SDK calls aren't safe to interleave. Chain them on one promise.
-  private renderQueue: Promise<void> = Promise.resolve()
+  // Render commands are applied one at a time (a 'mic' needs the page first; the SDK calls
+  // aren't safe to interleave). The queue COALESCES image frames: an image-over-BLE takes
+  // ~seconds, so if a newer frame for the same container arrives while one is in flight, it
+  // replaces the pending one instead of piling up — otherwise the glasses fall minutes behind.
+  private renderQueue: RenderCommand[] = []
+  private renderPumping = false
 
   async start() {
     this.buildUI()
@@ -62,11 +65,34 @@ class GlassesTerminal {
     }
   }
 
-  /** Apply render commands one at a time, preserving order (page must precede mic, etc.). */
+  /** Enqueue a render, coalescing superseded image frames, then pump the queue. */
   private enqueueRender(cmd: RenderCommand) {
-    this.renderQueue = this.renderQueue
-      .then(() => this.applyRender(cmd))
-      .catch(err => this.log(`render error: ${err instanceof Error ? err.message : err}`))
+    if (cmd.op === 'image') {
+      // Drop any still-pending frame for the same container — only the latest matters.
+      const id = cmd.image.containerID
+      this.renderQueue = this.renderQueue.filter(
+        c => !(c.op === 'image' && c.image.containerID === id))
+    }
+    this.renderQueue.push(cmd)
+    void this.pumpRenders()
+  }
+
+  /** Drain the queue one command at a time (BLE-serialized), newest-wins for images. */
+  private async pumpRenders() {
+    if (this.renderPumping) return
+    this.renderPumping = true
+    try {
+      while (this.renderQueue.length) {
+        const cmd = this.renderQueue.shift()!
+        try {
+          await this.applyRender(cmd)
+        } catch (err) {
+          this.log(`render error: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+    } finally {
+      this.renderPumping = false
+    }
   }
 
   // ── On-device diagnostic panel ──────────────────────────────────────────────
@@ -173,9 +199,13 @@ class GlassesTerminal {
         case 'text':
           await this.bridge.textContainerUpgrade(TextContainerUpgrade.fromJson(cmd.upgrade))
           break
-        case 'image':
-          await this.bridge.updateImageRawData(ImageRawDataUpdate.fromJson(cmd.image))
+        case 'image': {
+          const n = Array.isArray(cmd.image.imageData) ? cmd.image.imageData.length
+            : typeof cmd.image.imageData === 'string' ? cmd.image.imageData.length : -1
+          const res = await this.bridge.updateImageRawData(ImageRawDataUpdate.fromJson(cmd.image))
+          this.log(`updateImageRawData(id=${cmd.image.containerID}, bytes=${n}) → ${res}`)
           break
+        }
         case 'exit':
           await this.bridge.shutDownPageContainer(cmd.exitMode ?? 1)
           this.pageReady = false
@@ -212,15 +242,15 @@ class GlassesTerminal {
     }
 
     // fromJson builds the SDK container classes (incl. nested list/image) from our plain specs.
+    const imgN = page.imageObject?.length ?? 0
     if (!this.pageReady) {
       const result = await this.bridge.createStartUpPageContainer(CreateStartUpPageContainer.fromJson(page))
       this.pageReady = result === StartUpPageCreateResult.success
-      if (!this.pageReady) {
-        this.log(`createStartUpPageContainer failed: ${result}`)
-        return
-      }
+      this.log(`createStartUpPageContainer(img=${imgN}) → ${result}`)
+      if (!this.pageReady) return
     } else {
-      await this.bridge.rebuildPageContainer(RebuildPageContainer.fromJson(page))
+      const ok = await this.bridge.rebuildPageContainer(RebuildPageContainer.fromJson(page))
+      this.log(`rebuildPageContainer(img=${imgN}) → ${ok}`)
     }
     this.lastTextContainerId = onlyOneText ? textId : null
   }

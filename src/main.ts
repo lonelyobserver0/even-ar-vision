@@ -12,10 +12,13 @@ import {
   type PageSpec,
 } from './protocol'
 
+declare const __APP_VERSION__: string // injected by Vite from package.json
+
 interface ARAnalysis {
   objects: string[]
   scene: string
   confidence: number
+  say: string // the companion's short spoken-style remark about the scene
 }
 
 interface LMStudioConfig {
@@ -66,6 +69,42 @@ class ARVisionApp {
   private static readonly DIFF_GRID = 16
   private static readonly DIFF_THRESHOLD = 0.04
 
+  // ── Positioned-label HUD (boxes drawn with bordered TEXT containers) ─────────
+  // Images over BLE are too slow (4 tiles ≈ seconds). Text is light, and a text container
+  // takes xPosition/yPosition/width/height + a border — so one bordered container per object,
+  // sized to its box and holding the label, draws the bounding box AND the name, fast.
+  private static readonly HUD_W = 576    // glasses display width  (for video→display mapping)
+  private static readonly HUD_H = 288    // glasses display height
+  // SDK cap is 8 "other" (text) containers: a full-screen bg (input) + a caption strip + up to 6 labels.
+  private static readonly HUD_MAX_LABELS = 6
+  private static readonly HUD_LABEL_MIN_W = 48
+  private static readonly HUD_LABEL_MIN_H = 28
+  private static readonly HUD_CAPTION_ID = 2     // bottom strip holding the companion's remark
+  private static readonly HUD_CAPTION_H = 48      // px tall, at the bottom of the 288-high display
+  // Throttle redraws, and gate on a scene signature so detector jitter doesn't trigger one.
+  // Both the throttle (ms) and the jitter grid (px) are user-tunable — see hudIntervalMs /
+  // hudPosQuant below. Detectors also flicker (a box near the confidence threshold blinks in
+  // and out); keep an object until it's been missing this many ticks so a 1-frame dropout
+  // never causes a redraw.
+  private static readonly HUD_MISS_GRACE = 3
+
+  // Persona for the chat AI: it's the companion living in the glasses, seeing the user's view.
+  private static readonly COMPANION_SYSTEM_PROMPT = [
+    "You are the AR companion that lives in the user's Even Realities G2 smart glasses.",
+    "The user wears the glasses and keeps their phone camera facing outward, so you literally",
+    "see what they see: the live view is described to you (detected objects, any readable text)",
+    "and the current frame may be attached as an image. Act like a knowledgeable friend at the",
+    "user's side — proactive, warm, never robotic.",
+    "",
+    "Rules:",
+    "- Reply in the user's language.",
+    "- Your answer is shown on a tiny 576×288 glasses display and may be read aloud: keep it very",
+    "  short (1–2 sentences, ideally under 200 characters), plain text — no markdown, lists or emoji.",
+    "- When they say 'this/that/what is this', ground your answer in the current view and image.",
+    "- If the view is unclear or the camera is off, say so briefly instead of guessing.",
+    "- Don't mention being an AI/model, prompts, or JSON. Just talk naturally.",
+  ].join('\n')
+
   private canvasElement: HTMLCanvasElement | null = null
   private diffCanvas: HTMLCanvasElement | null = null
   private lastFrameSignature: Uint8ClampedArray | null = null
@@ -107,6 +146,18 @@ class ARVisionApp {
   private ocrCanvas: HTMLCanvasElement | null = null
   private lastLevel2At = 0
 
+  // Positioned-label HUD state: when on, the glasses show bordered text labels at each object.
+  private hudEnabled = false
+  private hudBusy = false         // serialize page sends
+  private lastHudAt = 0
+  private lastDrawnDets: Detection[] = [] // labels actually on the glasses, for hysteresis gating
+  private stableDets: Array<Detection & { miss: number }> = [] // flicker-debounced detections for the HUD
+  private lastHudSentAt = 0       // when a HUD page last actually reached the relay
+  private lastCaption = ''       // last text shown (non-HUD mode)
+  // Runtime-tunable HUD knobs (sliders in the UI, persisted to localStorage).
+  private hudIntervalMs = 1500   // min ms between redraws when the scene changes
+  private hudPosQuant = 24       // jitter threshold (px on the 576×288 display)
+
   private lmStudioConfig: LMStudioConfig = {
     baseUrl: 'http://100.120.191.29:1234/v1', // PC over Tailscale (works on any network); override in the UI
     model: 'local-model', // Sostituisci con il nome del tuo modello in LM Studio
@@ -132,7 +183,7 @@ class ARVisionApp {
     const app = document.querySelector<HTMLDivElement>('#app')!
     app.innerHTML = `
       <div class="ar-container">
-        <h1>AR Vision</h1>
+        <h1>AR Vision <span class="version">v${__APP_VERSION__}</span></h1>
         <p>Camera-based environment analysis for Even G2 glasses</p>
 
         <div class="camera-section">
@@ -152,6 +203,19 @@ class ARVisionApp {
           <button id="stopCamera" class="btn btn-secondary" disabled>Stop Camera</button>
           <button id="requestPermission" class="btn btn-accent">Request Permission</button>
           <button id="analyze" class="btn btn-accent" disabled>Analyze Now</button>
+          <label class="hud-toggle"><input type="checkbox" id="hudToggle"> Object labels on glasses</label>
+        </div>
+
+        <div class="hud-tuning">
+          <div class="slider-row">
+            <label for="hudInterval">HUD refresh floor: <b id="hudIntervalVal">1500</b> ms</label>
+            <input type="range" id="hudInterval" min="200" max="4000" step="100" value="1500">
+          </div>
+          <div class="slider-row">
+            <label for="hudQuant">Jitter grid (redraw threshold): <b id="hudQuantVal">24</b> px</label>
+            <input type="range" id="hudQuant" min="4" max="64" step="4" value="24">
+          </div>
+          <div class="hud-debug" id="hudDebug">HUD idle</div>
         </div>
 
         <div class="status">
@@ -258,6 +322,19 @@ class ARVisionApp {
     document.querySelector<HTMLButtonElement>('#stopCamera')!.addEventListener('click', () => this.stopCamera())
     document.querySelector<HTMLButtonElement>('#requestPermission')!.addEventListener('click', () => this.requestCameraPermission())
     document.querySelector<HTMLButtonElement>('#analyze')!.addEventListener('click', () => this.analyzeScene())
+    document.querySelector<HTMLInputElement>('#hudToggle')!.addEventListener('change', (e) =>
+      void this.onHudToggle((e.target as HTMLInputElement).checked))
+    document.querySelector<HTMLInputElement>('#hudInterval')!.addEventListener('input', (e) => {
+      this.hudIntervalMs = Number((e.target as HTMLInputElement).value)
+      document.querySelector<HTMLElement>('#hudIntervalVal')!.textContent = String(this.hudIntervalMs)
+      localStorage.setItem('hudIntervalMs', String(this.hudIntervalMs))
+    })
+    document.querySelector<HTMLInputElement>('#hudQuant')!.addEventListener('input', (e) => {
+      this.hudPosQuant = Number((e.target as HTMLInputElement).value)
+      document.querySelector<HTMLElement>('#hudQuantVal')!.textContent = String(this.hudPosQuant)
+      localStorage.setItem('hudPosQuant', String(this.hudPosQuant))
+      this.lastDrawnDets = [] // re-evaluate the gate against the new threshold on the next frame
+    })
     document.querySelector<HTMLButtonElement>('#saveConfig')!.addEventListener('click', () => this.saveConfig())
     document.querySelector<HTMLButtonElement>('#startVoice')!.addEventListener('click', () => this.startGlassesAudio())
     document.querySelector<HTMLButtonElement>('#stopVoice')!.addEventListener('click', () => this.stopGlassesAudio())
@@ -465,6 +542,9 @@ class ARVisionApp {
     this.ocrStreak = 0
     this.lastLevel2At = 0
     this.lastOcrAt = 0
+    this.lastHudAt = 0
+    this.lastDrawnDets = []
+    this.stableDets = []
     const labels = document.querySelector<HTMLDivElement>('#level1Labels')
     if (labels) labels.textContent = 'Level 1: idle'
 
@@ -542,8 +622,10 @@ class ARVisionApp {
         console.warn('Level-1 detect failed:', err instanceof Error ? err.message : err)
         return
       }
-      // Draw the boxes over the live preview so each label is shown enclosing its object.
-      this.drawDetections(video, detections)
+      // Debounce detector flicker once per tick, then draw the STABLE boxes on the preview too
+      // (not the raw, jittery ones) so the phone shows the same locked boxes as the glasses.
+      this.updateStableDets(detections, video.videoWidth, video.videoHeight)
+      this.drawDetections(video, this.stableDets)
       const objects = new Set(detections.map(d => d.label))
       const newObjects = [...objects].filter(o => !this.level1Objects.has(o))
 
@@ -556,8 +638,12 @@ class ARVisionApp {
       const objectsChanged = !this.sameSet(objects, this.level1Objects)
       if (objectsChanged || this.textChanged) {
         this.displayLevel1(objects, this.level1Text)
-        void this.publishToGlasses(this.formatLevel1(objects, this.level1Text))
+        // HUD off: text labels on the glasses. HUD on: the bitmap carries the boxes, so the
+        // glasses get a short caption instead (full pixel push happens below, throttled).
+        void this.showGlassesText(this.formatLevel1(objects, this.level1Text))
       }
+      // HUD on: push the graphical bounding-box frame (throttled, serialized internally).
+      if (this.hudEnabled) void this.pushHud(video, detections)
       this.level1Objects = objects
 
       // Escalation: a NEW object class or newly-read text triggers a rich Level-2
@@ -716,6 +802,206 @@ class ARVisionApp {
     }
   }
 
+  // ── Positioned-label HUD: bordered text containers at each object ────────────
+  // One bordered text container per stable detection, positioned & sized to its box (mapped
+  // video → 576×288 display), holding the label. Text is cheap over BLE, so this is fast — a
+  // whole page rebuilds in well under what four PNG tiles cost. Only rebuilt when the scene
+  // changes (stable-set hysteresis), so a still object never re-sends.
+
+  /** Toggle the HUD at runtime. */
+  private async onHudToggle(enabled: boolean) {
+    this.hudEnabled = enabled
+    localStorage.setItem('hudEnabled', String(enabled))
+    this.lastHudAt = 0
+    this.lastDrawnDets = []
+    if (!this.isStreaming) return
+    if (!enabled) {
+      // Back to the plain full-screen text page.
+      await this.publishToGlasses(this.lastCaption || ' ')
+    }
+    // When enabling, the next level1Tick pushes the labels page (gate sees lastDrawnDets=[]).
+  }
+
+  /** Route the companion's words to the glasses. Non-HUD mode: a full-screen text page. HUD
+   *  mode: update the caption strip IN PLACE (no rebuild) so it shows under the object labels. */
+  private async showGlassesText(content: string) {
+    this.lastCaption = content
+    this.updateGlassesPreview(content)
+    if (!this.hudEnabled) { await this.publishToGlasses(content); return }
+    if (!this.isStreaming) return
+    // The labels page owns the caption container; if it isn't up yet, push it once so the
+    // container exists, then the in-place text update lands on it.
+    if (!this.lastDrawnDets.length) await this.publishLabels()
+    await this.relay.publish(RENDER_TOPIC, {
+      op: 'text',
+      upgrade: {
+        containerID: ARVisionApp.HUD_CAPTION_ID,
+        containerName: 'caption',
+        content: content || ' ',
+      },
+    } satisfies RenderCommand)
+  }
+
+  /** A page of text containers: full-screen bg (captures input) + a bottom caption strip (the
+   *  companion's remark) + one bordered box per object, positioned/sized to it on the display. */
+  private labelsPage(dets: Array<Detection & { miss: number }>, vw: number, vh: number): PageSpec {
+    const sx = ARVisionApp.HUD_W / vw, sy = ARVisionApp.HUD_H / vh
+    const clamp = (v: number, lo: number, hi: number) => v < lo ? lo : v > hi ? hi : v
+
+    const boxes = dets.slice(0, ARVisionApp.HUD_MAX_LABELS).map((d, i) => {
+      const w = clamp(d.box.width * sx, ARVisionApp.HUD_LABEL_MIN_W, ARVisionApp.HUD_W)
+      const h = clamp(d.box.height * sy, ARVisionApp.HUD_LABEL_MIN_H, ARVisionApp.HUD_H)
+      const x = clamp(d.box.x * sx, 0, ARVisionApp.HUD_W - w)
+      const y = clamp(d.box.y * sy, 0, ARVisionApp.HUD_H - h)
+      return {
+        xPosition: Math.round(x), yPosition: Math.round(y),
+        width: Math.round(w), height: Math.round(h),
+        borderWidth: 2, borderColor: 5, borderRadius: 4, paddingLength: 2,
+        containerID: i + 3, containerName: `obj${i}`,
+        content: d.label,
+      }
+    })
+
+    return {
+      containerTotalNum: 2 + boxes.length,
+      textObject: [
+        { // full-screen background: captures touch input, stays out of the way
+          xPosition: 0, yPosition: 0, width: ARVisionApp.HUD_W, height: ARVisionApp.HUD_H,
+          containerID: ARVisionApp.GLASSES_CONTAINER_ID, containerName: ARVisionApp.GLASSES_CONTAINER_NAME,
+          content: ' ', isEventCapture: 1,
+        },
+        { // bottom caption strip: the companion's remark, always visible under the labels
+          xPosition: 0, yPosition: ARVisionApp.HUD_H - ARVisionApp.HUD_CAPTION_H,
+          width: ARVisionApp.HUD_W, height: ARVisionApp.HUD_CAPTION_H, paddingLength: 4,
+          containerID: ARVisionApp.HUD_CAPTION_ID, containerName: 'caption',
+          content: this.lastCaption || ' ',
+        },
+        ...boxes,
+      ],
+    }
+  }
+
+  /** Build + publish the labels page (with the current caption). No gating — callers decide. */
+  private async publishLabels(): Promise<boolean> {
+    const video = document.querySelector<HTMLVideoElement>('#cameraView')
+    const vw = video?.videoWidth ?? 0, vh = video?.videoHeight ?? 0
+    if (!vw || !vh) return false
+    // Retain so a late-connecting terminal gets the current labels + caption too.
+    const page = this.labelsPage(this.stableDets, vw, vh)
+    const ok = await this.relay.publish(RENDER_TOPIC, { op: 'page', page } satisfies RenderCommand, true)
+    if (ok) {
+      this.lastDrawnDets = this.stableDets.map(d => ({ label: d.label, score: d.score, box: { ...d.box } }))
+      this.lastHudSentAt = Date.now()
+    } else {
+      console.warn('HUD labels NOT delivered — relay rejected the publish.')
+    }
+    return ok
+  }
+
+  /** Rebuild the positioned-labels page when the stable scene changes (gated + throttled). */
+  private async pushHud(video: HTMLVideoElement, detections: Detection[]) {
+    if (!this.hudEnabled) return
+    const labels = detections.map(d => d.label).join(',') || '—'
+    // Watchdog: never let a hung send freeze the HUD forever.
+    if (this.hudBusy) {
+      if (Date.now() - this.lastHudAt > 10000) this.hudBusy = false
+      else { this.setHudDebug(`busy | det:${labels}`); return }
+    }
+    const vw = video.videoWidth, vh = video.videoHeight
+    if (!vw || !vh) { this.setHudDebug(`no video`); return }
+
+    // The stable set is maintained once per tick (level1Tick). Gate on hysteresis vs. drawn.
+    const stable = this.stableDets.map(d => d.label).join(',') || '—'
+    const changed = this.sceneChanged(this.stableDets, vw, vh)
+    const drawn = this.lastDrawnDets.map(d => d.label).join(',') || '—'
+    const age = ((Date.now() - this.lastHudSentAt) / 1000) | 0
+    this.setHudDebug(`det:${labels} | stable:${stable} | drawn:${drawn} | ${changed ? 'CHANGED' : 'same'} | ${age}s`)
+    if (!changed) return
+    if (Date.now() - this.lastHudAt < this.hudIntervalMs) return // rate floor for real changes
+
+    this.hudBusy = true
+    this.lastHudAt = Date.now()
+    try {
+      await this.publishLabels()
+    } finally {
+      this.hudBusy = false
+    }
+  }
+
+  /** Fold this frame's raw detections into the flicker-debounced stable set:
+   *  - a stable box only MOVES when it shifts past the threshold (spatial hysteresis);
+   *  - an object only LEAVES after HUD_MISS_GRACE consecutive misses (temporal hysteresis);
+   *  - a genuinely new object is added immediately. */
+  private updateStableDets(curr: Detection[], vw: number, vh: number) {
+    const sx = ARVisionApp.HUD_W / vw, sy = ARVisionApp.HUD_H / vh
+    const tol = this.hudPosQuant                 // movement threshold, HUD px
+    const matchDist = Math.max(tol * 3, ARVisionApp.HUD_W * 0.2) // "same object" radius, HUD px
+    const used = new Array(curr.length).fill(false)
+    const cx = (b: Detection['box']) => (b.x + b.width / 2) * sx
+    const cy = (b: Detection['box']) => (b.y + b.height / 2) * sy
+
+    for (const s of this.stableDets) {
+      // Match to the nearest unused current detection of the same class.
+      let best = -1, bestD = Infinity
+      for (let i = 0; i < curr.length; i++) {
+        if (used[i] || curr[i].label !== s.label) continue
+        const d = Math.hypot(cx(curr[i].box) - cx(s.box), cy(curr[i].box) - cy(s.box))
+        if (d < bestD) { bestD = d; best = i }
+      }
+      if (best >= 0 && bestD <= matchDist) {
+        used[best] = true
+        s.miss = 0
+        const b = curr[best].box
+        const moved = Math.abs((b.x - s.box.x) * sx) > tol || Math.abs((b.y - s.box.y) * sy) > tol ||
+          Math.abs((b.width - s.box.width) * sx) > tol || Math.abs((b.height - s.box.height) * sy) > tol
+        if (moved) s.box = { ...b } // only then do we let the drawn box follow the object
+      } else {
+        s.miss++
+      }
+    }
+    // Drop objects gone for too long; add brand-new ones.
+    this.stableDets = this.stableDets.filter(s => s.miss <= ARVisionApp.HUD_MISS_GRACE)
+    for (let i = 0; i < curr.length; i++) {
+      if (!used[i]) this.stableDets.push({ ...curr[i], box: { ...curr[i].box }, miss: 0 })
+    }
+  }
+
+  /** Hysteresis gate: true if the scene meaningfully differs from what's drawn on the glasses
+   *  — a class appeared/left, or some box moved/resized more than hudPosQuant (in HUD px) from
+   *  its last-drawn position. Comparing against the last DRAWN boxes (not a global grid) means
+   *  sub-threshold jitter never flips the gate, so a still object never triggers a redraw. */
+  private sceneChanged(curr: Detection[], vw: number, vh: number): boolean {
+    const prev = this.lastDrawnDets
+    if (prev.length !== curr.length) return true
+    const sx = ARVisionApp.HUD_W / vw, sy = ARVisionApp.HUD_H / vh
+    const tol = this.hudPosQuant
+
+    // Group boxes by class (HUD coords), each group sorted, so we compare like-for-like
+    // regardless of the order the detector returns them in.
+    const group = (arr: Detection[]) => {
+      const m = new Map<string, number[][]>()
+      for (const d of arr) {
+        const g = m.get(d.label) ?? []
+        g.push([d.box.x * sx, d.box.y * sy, d.box.width * sx, d.box.height * sy])
+        m.set(d.label, g)
+      }
+      for (const g of m.values()) g.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+      return m
+    }
+    const pm = group(prev), cm = group(curr)
+    if (pm.size !== cm.size) return true
+    for (const [label, cg] of cm) {
+      const pg = pm.get(label)
+      if (!pg || pg.length !== cg.length) return true
+      for (let i = 0; i < cg.length; i++) {
+        for (let k = 0; k < 4; k++) {
+          if (Math.abs(cg[i][k] - pg[i][k]) > tol) return true
+        }
+      }
+    }
+    return false
+  }
+
   // ── Level 2: rich description from the vision-LLM ───────────────────────────
   private async runLevel2(force = false) {
     if (!this.canvasElement || !this.isStreaming) return
@@ -836,6 +1122,11 @@ class ARVisionApp {
       )
 
       try {
+        const view = this.buildVisionContext()
+        const systemContent = ARVisionApp.COMPANION_SYSTEM_PROMPT +
+          (view ? `\n\nCurrent view — ${view}.` : '') +
+          "\n\nRight now you are glancing at the scene on your own — the user has NOT asked anything. " +
+          "Offer one short, natural remark about what you see (useful or interesting), as a companion would."
         const response = await fetch(`${this.lmStudioConfig.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: headers,
@@ -843,12 +1134,13 @@ class ARVisionApp {
           body: JSON.stringify({
             model: this.lmStudioConfig.model,
             messages: [
+              { role: 'system', content: systemContent },
               {
                 role: 'user',
                 content: [
                   {
                     type: 'text',
-                    text: 'Analyze this image and provide: 1) Scene description (max 3 words), 2) List of main objects visible (max 5 items), 3) Confidence score (0-1). Return in JSON format: {"scene": "...", "objects": [...], "confidence": ...}'
+                    text: 'Look at my current view and reply ONLY with JSON: {"say": "<your one short companion remark, in my language>", "scene": "<2-3 word setting>", "objects": ["<up to 5 notable things>"]}'
                   },
                   {
                     type: 'image_url',
@@ -875,26 +1167,21 @@ class ARVisionApp {
 
         this.updateAiBadge(true)
 
-        // Parse the AI response
+        // Parse the AI response. If it didn't return JSON, treat the whole reply as the remark.
         const jsonMatch = content.match(/\{[\s\S]*\}/)
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0])
           return {
             scene: parsed.scene || 'unknown',
             objects: parsed.objects || [],
-            confidence: parsed.confidence || 0.5
+            confidence: 1,
+            say: (parsed.say || '').trim() || String(content).trim(),
           }
         }
+        return { scene: 'unknown', objects: [], confidence: 1, say: String(content).trim() }
       } catch (e: any) {
         clearTimeout(timeoutId)
         throw e
-      }
-
-      // Fallback if JSON parsing fails
-      return {
-        scene: 'unknown',
-        objects: [],
-        confidence: 0.5
       }
     } catch (error) {
       console.warn('AI service not available:', error instanceof Error ? error.message : error)
@@ -903,7 +1190,8 @@ class ARVisionApp {
       return {
         objects: [],
         scene: 'AI offline',
-        confidence: 0
+        confidence: 0,
+        say: '',
       }
     }
   }
@@ -923,6 +1211,7 @@ class ARVisionApp {
     }
 
     resultsDiv.innerHTML = `
+      ${analysis.say ? `<div class="result-item"><strong>Companion:</strong> ${this.escapeHtml(analysis.say)}</div>` : ''}
       <div class="result-item">
         <strong>Scene:</strong> ${this.escapeHtml(analysis.scene)}
       </div>
@@ -932,9 +1221,6 @@ class ARVisionApp {
           ${analysis.objects.map(obj => `<li>${this.escapeHtml(obj)}</li>`).join('')}
         </ul>
       </div>
-      <div class="result-item">
-        <strong>Confidence:</strong> ${(analysis.confidence * 100).toFixed(1)}%
-      </div>
     `
   }
 
@@ -943,27 +1229,26 @@ class ARVisionApp {
     if (!this.aiConnected && analysis.confidence === 0) {
       return
     }
-    await this.publishToGlasses(this.formatForGlasses(analysis))
+    await this.showGlassesText(this.formatForGlasses(analysis))
   }
 
   private formatForGlasses(analysis: ARAnalysis): string {
-    // Format analysis for small 576x288 display
-    // Max ~400-500 characters
-    let content = `━ SCENE ANALYSIS ━\n\n`
-    content += `Scene: ${analysis.scene}\n\n`
-    content += `Objects:\n`
-    analysis.objects.slice(0, 4).forEach(obj => {
-      content += `• ${obj}\n`
-    })
-    content += `\nConf: ${(analysis.confidence * 100).toFixed(0)}%\n`
-    content += `━ SCROLL FOR MORE ━`
-
-    return content
+    // The companion's own words read best on the tiny display; fall back to the scene/objects
+    // if the model gave no remark.
+    if (analysis.say) return analysis.say
+    const objs = analysis.objects.slice(0, 4).join(', ')
+    return objs ? `${analysis.scene} — ${objs}` : analysis.scene
   }
 
   private updateGlassesPreview(content: string) {
     const preview = document.querySelector<HTMLDivElement>('#glassesDisplay')!
     preview.innerHTML = `<pre>${this.escapeHtml(content)}</pre>`
+  }
+
+  /** Live one-line HUD diagnostics (what the detector sees vs. what's drawn, gate, send age). */
+  private setHudDebug(text: string) {
+    const el = document.querySelector<HTMLDivElement>('#hudDebug')
+    if (el) el.textContent = text
   }
 
   private updateStatus(message: string) {
@@ -1012,6 +1297,18 @@ class ARVisionApp {
       this.relayUrl = savedRelay
       document.querySelector<HTMLInputElement>('#relayUrl')!.value = savedRelay
     }
+
+    this.hudEnabled = localStorage.getItem('hudEnabled') === 'true'
+    document.querySelector<HTMLInputElement>('#hudToggle')!.checked = this.hudEnabled
+
+    const savedInterval = localStorage.getItem('hudIntervalMs')
+    if (savedInterval) this.hudIntervalMs = Number(savedInterval)
+    document.querySelector<HTMLInputElement>('#hudInterval')!.value = String(this.hudIntervalMs)
+    document.querySelector<HTMLElement>('#hudIntervalVal')!.textContent = String(this.hudIntervalMs)
+    const savedQuant = localStorage.getItem('hudPosQuant')
+    if (savedQuant) this.hudPosQuant = Number(savedQuant)
+    document.querySelector<HTMLInputElement>('#hudQuant')!.value = String(this.hudPosQuant)
+    document.querySelector<HTMLElement>('#hudQuantVal')!.textContent = String(this.hudPosQuant)
 
     const savedAsr = localStorage.getItem('asrUrl')
     if (savedAsr) this.asrUrl = savedAsr
@@ -1172,7 +1469,7 @@ class ARVisionApp {
     // Buffer every PCM chunk the terminal publishes while we're listening.
     this.audioUnsub = this.relay.subscribe<AudioMessage>(AUDIO_TOPIC, (msg) => this.onAudioChunk(msg))
     // audioControl requires a created page first (SDK prerequisite); the render queue keeps order.
-    await this.publishToGlasses('🎤 Listening…')
+    await this.showGlassesText('🎤 Listening…')
     // Tell the terminal to switch the glasses mic on (transient — not retained).
     await this.relay.publish(RENDER_TOPIC, { op: 'mic', on: true } satisfies RenderCommand)
     this.updateVoiceStatus('🎤 Listening… speak, then press Stop Voice.')
@@ -1208,7 +1505,7 @@ class ARVisionApp {
       }
       this.updateVoiceStatus(`You said: “${text}”`)
       this.addChatMessage('user', text)
-      await this.sendToAI(text)
+      await this.sendToAI()
     } catch (err) {
       console.error('Transcription failed:', err instanceof Error ? err.message : err)
       this.updateVoiceStatus('Transcription failed — check the Whisper (ASR) URL.')
@@ -1302,7 +1599,7 @@ class ARVisionApp {
 
     input.value = ''
     this.addChatMessage('user', text)
-    await this.sendToAI(text)
+    await this.sendToAI()
   }
 
   private addChatMessage(role: string, content: string) {
@@ -1332,7 +1629,38 @@ class ARVisionApp {
     statusElement.textContent = message
   }
 
-  private async sendToAI(message: string) {
+  /** A short textual summary of what the glasses currently perceive, for the companion's context. */
+  private buildVisionContext(): string {
+    const objs = [...new Set(this.stableDets.map(d => d.label))]
+    const parts: string[] = []
+    if (objs.length) parts.push(`objects in view: ${objs.join(', ')}`)
+    if (this.level1Text) parts.push(`readable text: "${this.level1Text}"`)
+    return parts.join('; ')
+  }
+
+  /** Downscaled JPEG data URL of the current frame (live video or captured photo), or null. */
+  private captureFrameDataUrl(): string | null {
+    if (!this.canvasElement || !this.isStreaming) return null
+    const ctx = this.canvasElement.getContext('2d')
+    if (!ctx) return null
+    let source: CanvasImageSource, sw: number, sh: number
+    if (this.mediaStream && !this.usingFallbackCamera) {
+      const video = document.querySelector<HTMLVideoElement>('#cameraView')!
+      if (!video.videoWidth) return null
+      source = video; sw = video.videoWidth; sh = video.videoHeight
+    } else {
+      const img = document.querySelector<HTMLImageElement>('#capturedImg')!
+      if (!img.src || img.style.display === 'none') return null
+      source = img; sw = img.naturalWidth || 640; sh = img.naturalHeight || 480
+    }
+    const scale = Math.min(1, ARVisionApp.ANALYSIS_MAX_DIM / Math.max(sw, sh))
+    const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale))
+    this.canvasElement.width = w; this.canvasElement.height = h
+    ctx.drawImage(source, 0, 0, w, h)
+    return this.canvasElement.toDataURL('image/jpeg', 0.7)
+  }
+
+  private async sendToAI() {
     this.updateVoiceStatus('Sending to AI...')
 
     try {
@@ -1350,6 +1678,26 @@ class ARVisionApp {
         ARVisionApp.LLM_REQUEST_TIMEOUT_MS,
       )
 
+      // Companion framing: persona + what's currently in view. The user message is already the
+      // last entry in chatHistory (addChatMessage runs before this), so don't append it again.
+      const view = this.buildVisionContext()
+      const systemContent = ARVisionApp.COMPANION_SYSTEM_PROMPT +
+        (view ? `\n\nCurrent view — ${view}.` : '\n\nThe camera is not active right now.')
+
+      const history: Array<{ role: string; content: unknown }> = [...this.chatHistory]
+      // Attach the current frame to the latest user turn so a vision model actually sees it.
+      const frame = this.captureFrameDataUrl()
+      const last = history[history.length - 1]
+      if (frame && last && last.role === 'user' && typeof last.content === 'string') {
+        history[history.length - 1] = {
+          role: 'user',
+          content: [
+            { type: 'text', text: last.content },
+            { type: 'image_url', image_url: { url: frame } },
+          ],
+        }
+      }
+
       try {
         const response = await fetch(`${this.lmStudioConfig.baseUrl}/chat/completions`, {
           method: 'POST',
@@ -1358,8 +1706,8 @@ class ARVisionApp {
           body: JSON.stringify({
             model: this.lmStudioConfig.model,
             messages: [
-              ...this.chatHistory,
-              { role: 'user', content: message }
+              { role: 'system', content: systemContent },
+              ...history,
             ],
             max_tokens: this.lmStudioConfig.maxTokens,
             temperature: this.lmStudioConfig.temperature
@@ -1379,7 +1727,7 @@ class ARVisionApp {
         this.updateVoiceStatus('Response received')
 
         // Also show the response on the glasses terminal.
-        await this.publishToGlasses(`AI: ${aiResponse.substring(0, 200)}`)
+        await this.showGlassesText(`AI: ${aiResponse.substring(0, 200)}`)
       } catch (e: any) {
         clearTimeout(timeoutId)
         throw e

@@ -26,8 +26,10 @@ export async function loadObjectDetector(): Promise<MPObjectDetector> {
   const make = (delegate: 'GPU' | 'CPU') =>
     ObjectDetector.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: MP_MODEL, delegate },
-      scoreThreshold: 0.5,
-      maxResults: 12,
+      // Higher threshold + fewer results = fewer borderline detections blinking in and out,
+      // which is the main source of box "recalculation" on a static scene.
+      scoreThreshold: 0.6,
+      maxResults: 6,
       runningMode: 'VIDEO',
     })
   try {
